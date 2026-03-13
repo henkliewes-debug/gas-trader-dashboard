@@ -6,15 +6,15 @@ export async function fetchGasPrices() {
 
   for (const symbol of symbols) {
     try {
-      // Get latest price from DB history
-      const latest = await prisma.priceHistory.findFirst({
+      // Get latest price from DB
+      const latest = await prisma.gasPrice.findFirst({
         where: { symbol },
-        orderBy: { date: 'desc' },
+        orderBy: { timestamp: 'desc' },
       });
 
-      const prev = await prisma.priceHistory.findFirst({
+      const prev = await prisma.gasPrice.findFirst({
         where: { symbol },
-        orderBy: { date: 'desc' },
+        orderBy: { timestamp: 'desc' },
         skip: 1,
       });
 
@@ -22,17 +22,8 @@ export async function fetchGasPrices() {
       const prevPrice = prev?.price ?? price;
       const change = price - prevPrice;
       const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
-
-      // For TTF also get high/low from last 30 days
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const history30 = await prisma.priceHistory.findMany({
-        where: { symbol, date: { gte: thirtyDaysAgo } },
-        orderBy: { date: 'asc' },
-      });
-      const prices30 = history30.map((h: { price: number }) => h.price);
-      const high = prices30.length ? Math.max(...prices30) : price;
-      const low = prices30.length ? Math.min(...prices30) : price;
+      const high = latest?.high ?? price;
+      const low = latest?.low ?? price;
 
       results.push({ symbol, price, change, changePercent, high, low });
     } catch (e) {
@@ -49,13 +40,13 @@ export async function fetchPriceHistory(symbol: string) {
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
 
-    const history = await prisma.priceHistory.findMany({
-      where: { symbol, date: { gte: ninetyDaysAgo } },
-      orderBy: { date: 'asc' },
+    const history = await prisma.gasPrice.findMany({
+      where: { symbol, timestamp: { gte: ninetyDaysAgo } },
+      orderBy: { timestamp: 'asc' },
     });
 
-    return history.map((h: { date: Date; price: number }) => ({
-      date: h.date.toISOString().split('T')[0],
+    return history.map((h: { timestamp: Date; price: number }) => ({
+      date: h.timestamp.toISOString().split('T')[0],
       price: h.price,
     }));
   } catch (e) {
