@@ -3,6 +3,7 @@ import PriceChart from '@/components/charts/PriceChart'
 import WeatherWidget from '@/components/widgets/WeatherWidget'
 import NewsFeed from '@/components/widgets/NewsFeed'
 import TankerWidget from '@/components/widgets/TankerWidget'
+import ForwardsWidget from '@/components/widgets/ForwardsWidget'
 import { fetchGasPrices } from '@/lib/fetchPrices'
 import { fetchWeather } from '@/lib/fetchWeather'
 import { fetchEnergyNews } from '@/lib/fetchNews'
@@ -13,7 +14,7 @@ export default async function Dashboard() {
   const [prices, weather, news] = await Promise.all([
     fetchGasPrices().catch(() => []),
     fetchWeather().catch(() => []),
-    fetchEnergyNews().catch(() => []),
+    fetchEnergyNews().catch(() => [])
   ])
 
   return (
@@ -21,7 +22,7 @@ export default async function Dashboard() {
       <header className="border-b border-gray-800 px-6 py-4">
         <div className="max-w-screen-2xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center text-white font-bold">⛽</div>
+            <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center text-white font-bold">🔥</div>
             <div>
               <h1 className="text-xl font-bold text-white">Natural Gas Trader</h1>
               <p className="text-xs text-gray-500">TTF · NBP · LNG Markets</p>
@@ -30,6 +31,7 @@ export default async function Dashboard() {
         </div>
       </header>
       <main className="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
+        {/* Price widgets row */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {prices.map((p) => <PriceWidget key={p.symbol} {...p} />)}
           {prices.length >= 2 && (
@@ -40,14 +42,23 @@ export default async function Dashboard() {
             </div>
           )}
         </div>
+
+        {/* Charts row */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <PriceChart symbol="TTF" />
           <PriceChart symbol="NBP" />
         </div>
+
+        {/* Forward curve — full width */}
+        <ForwardsWidget />
+
+        {/* Weather + News */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <WeatherWidget locations={weather} />
-          <div className="md:col-span-2"><NewsFeed articles={news.slice(0, 8)} /></div>
+          <div className="md:col-span-2"><NewsFeed articles={news.slice(0, 15)} /></div>
         </div>
+
+        {/* LNG tanker map */}
         <TankerWidget />
       </main>
     </div>
