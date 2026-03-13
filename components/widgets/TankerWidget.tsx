@@ -2,7 +2,6 @@
 
 import { useEffect, useRef } from 'react';
 
-// Known LNG tanker positions (major vessels near Europe/NW passage)
 const LNG_TANKERS = [
   { name: 'Arctic Lady', lat: 58.2, lng: -5.1, status: 'Underway', from: 'Hammerfest', to: 'Rotterdam' },
   { name: 'Methane Princess', lat: 51.9, lng: 4.5, status: 'In Port', from: 'Qatar', to: 'Rotterdam' },
@@ -16,12 +15,12 @@ const LNG_TANKERS = [
 
 export default function TankerWidget() {
   const mapRef = useRef<HTMLDivElement>(null);
-  const mapInstanceRef = useRef<unknown>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mapInstanceRef = useRef<any>(null);
 
   useEffect(() => {
     if (!mapRef.current || mapInstanceRef.current) return;
 
-    // Load Leaflet dynamically
     const link = document.createElement('link');
     link.rel = 'stylesheet';
     link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
@@ -30,8 +29,9 @@ export default function TankerWidget() {
     const script = document.createElement('script');
     script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
     script.onload = () => {
-      const L = (window as unknown as { L: typeof import('leaflet') }).L;
-      const map = L.map(mapRef.current!, {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const L = (window as any).L;
+      const map = L.map(mapRef.current, {
         center: [48, 10],
         zoom: 4,
         zoomControl: true,
@@ -43,29 +43,20 @@ export default function TankerWidget() {
         maxZoom: 19,
       }).addTo(map);
 
-      // Add tanker markers
       LNG_TANKERS.forEach(tanker => {
         const color = tanker.status === 'In Port' ? '#22c55e' :
                       tanker.status === 'Loading' ? '#f59e0b' : '#3b82f6';
 
         const icon = L.divIcon({
           className: '',
-          html: `<div style="
-            width:12px;height:12px;border-radius:50%;
-            background:${color};border:2px solid white;
-            box-shadow:0 0 6px ${color};
-          "></div>`,
+          html: `<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 0 6px ${color};"></div>`,
           iconSize: [12, 12],
           iconAnchor: [6, 6],
         });
 
         L.marker([tanker.lat, tanker.lng], { icon })
           .addTo(map)
-          .bindPopup(`
-            <b>🚢 ${tanker.name}</b><br/>
-            Status: <b>${tanker.status}</b><br/>
-            ${tanker.from} → ${tanker.to}
-          `);
+          .bindPopup(`<b>🚢 ${tanker.name}</b><br/>Status: <b>${tanker.status}</b><br/>${tanker.from} → ${tanker.to}`);
       });
 
       mapInstanceRef.current = map;
@@ -74,7 +65,7 @@ export default function TankerWidget() {
 
     return () => {
       if (mapInstanceRef.current) {
-        (mapInstanceRef.current as { remove: () => void }).remove();
+        mapInstanceRef.current.remove();
         mapInstanceRef.current = null;
       }
     };
@@ -85,9 +76,7 @@ export default function TankerWidget() {
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span>🚢</span>
-          <h3 className="text-sm font-semibold text-white/80 uppercase tracking-wider">
-            LNG Tanker Positions
-          </h3>
+          <h3 className="text-sm font-semibold text-white/80 uppercase tracking-wider">LNG Tanker Positions</h3>
         </div>
         <div className="flex items-center gap-3 text-xs text-white/50">
           <span><span style={{color:'#3b82f6'}}>●</span> Underway</span>
@@ -98,4 +87,4 @@ export default function TankerWidget() {
       <div ref={mapRef} style={{ height: '340px', borderRadius: '8px', overflow: 'hidden' }} />
     </div>
   );
-          }
+}
