@@ -9,7 +9,7 @@ interface NewsItem {
 const GAS_KEYWORDS = ['natural gas', 'lng', 'ttf', 'nbp', 'gas price', 'gas supply',
   'gas demand', 'gas storage', 'gas market', 'gas trade', 'gas pipeline',
   'gas import', 'gas export', 'gas futures', 'energy price', 'gas flow',
-  'regasification', 'gasification', 'methane', 'gas grid', 'gas hub'];
+  'regasification', 'methane', 'gas grid', 'gas hub'];
 
 const OIL_KEYWORDS = ['oil', 'crude', 'brent', 'wti', 'opec', 'petroleum', 'barrel'];
 
@@ -25,6 +25,20 @@ function isOilRelated(text: string): boolean {
   return OIL_KEYWORDS.some(k => lower.includes(k)) && !isGasRelated(text);
 }
 
+function formatDate(raw: string): string {
+  if (!raw) return '';
+  try {
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return raw;
+    const day = d.getDate();
+    const month = d.toLocaleString('en', { month: 'short' });
+    const year = d.getFullYear();
+    return `${day} ${month} ${year}`;
+  } catch {
+    return raw;
+  }
+}
+
 async function fetchRssFeed(rssUrl: string, sourceName: string): Promise<NewsItem[]> {
   try {
     const url = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}&count=20`;
@@ -34,7 +48,7 @@ async function fetchRssFeed(rssUrl: string, sourceName: string): Promise<NewsIte
     return (data.items || []).map((item: { title: string; link: string; pubDate: string }) => ({
       title: item.title,
       link: item.link,
-      pubDate: item.pubDate,
+      pubDate: formatDate(item.pubDate),
       source: sourceName,
     }));
   } catch {
@@ -43,7 +57,6 @@ async function fetchRssFeed(rssUrl: string, sourceName: string): Promise<NewsIte
 }
 
 export async function fetchEnergyNews(): Promise<NewsItem[]> {
-  // Multiple RSS feeds for better gas coverage
   const feeds = await Promise.allSettled([
     fetchRssFeed('https://feeds.reuters.com/reuters/businessNews', 'Reuters'),
     fetchRssFeed('https://www.naturalgasintel.com/feed/', 'NGI'),
@@ -67,29 +80,24 @@ export async function fetchEnergyNews(): Promise<NewsItem[]> {
     return true;
   });
 
-  // Separate gas and oil items
-  const gasItems = unique.filter(item => isGasRelated(item.title + ' ' + item.title));
-  const oilOnlyItems = unique.filter(item => isOilRelated(item.title + ' ' + item.title));
+  const gasItems = unique.filter(item => isGasRelated(item.title));
+  const oilOnlyItems = unique.filter(item => isOilRelated(item.title));
   const otherEnergyItems = unique.filter(item => {
     const lower = item.title.toLowerCase();
     return ENERGY_KEYWORDS.some(k => lower.includes(k)) && !isGasRelated(item.title) && !isOilRelated(item.title);
   });
 
-  // Build final list: as many gas items as possible, max 1 oil, some other energy
   const result: NewsItem[] = [];
   result.push(...gasItems.slice(0, 12));
-  if (oilOnlyItems.length > 0) result.push(oilOnlyItems[0]); // max 1 oil
+  if (oilOnlyItems.length > 0) result.push(oilOnlyItems[0]);
   result.push(...otherEnergyItems.slice(0, 2));
 
-  // Sort by date descending
-  result.sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime());
-
-  // Fallback if empty
   if (result.length === 0) {
+    const today = formatDate(new Date().toISOString());
     return [
-      { title: 'European natural gas prices rise amid supply concerns', link: '#', pubDate: new Date().toISOString(), source: 'Reuters' },
-      { title: 'LNG imports to Europe hit record as pipeline flows drop', link: '#', pubDate: new Date().toISOString(), source: 'Reuters' },
-      { title: 'NBP gas prices track TTF higher on cold weather forecast', link: '#', pubDate: new Date().toISOString(), source: 'Reuters' },
+      { title: 'European natural gas prices rise amid supply concerns', link: '#', pubDate: today, source: 'Reuters' },
+      { title: 'LNG imports to Europe hit record as pipeline flows drop', link: '#', pubDate: today, source: 'Reuters' },
+      { title: 'NBP gas prices track TTF higher on cold weather forecast', link: '#', pubDate: today, source: 'Reuters' },
     ];
   }
 
