@@ -1,4 +1,4 @@
-// fetchNews.ts — direct RSS XML parsing, no third-party proxy
+// fetchNews.ts — direct RSS XML parsing, no /s flag (Railway compat)
 interface NewsItem {
   title: string;
   url: string;
@@ -22,18 +22,26 @@ function safeDate(raw: string): string {
   try { const d = new Date(raw); return isNaN(d.getTime()) ? '' : d.toISOString(); } catch { return ''; }
 }
 
+function extractTag(block: string, tag: string): string {
+  // No /s flag — use [sS] instead of . with /s
+  const re = new RegExp('<' + tag + '[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/' + tag + '>', 'i');
+  return (block.match(re) || [])[1]?.trim() || '';
+}
+
 function parseRssXml(xml: string, sourceName: string): NewsItem[] {
   try {
     const items: NewsItem[] = [];
-    const itemRegex = /<item[^>]*>([sS]*?)<\/item>/gi;
-    let match;
-    while ((match = itemRegex.exec(xml)) !== null) {
-      const block = match[1];
-      const title = (block.match(/<title[^>]*>(?:<![CDATA[)?([sS]*?)(?:]]>)?<\/title>/) || [])[1]?.trim() || '';
-      const link = (block.match(/<link[^>]*>([^<]+)<\/link>/) || block.match(/<link[^>]*\/?>/) || [])[1]?.trim() || '#';
-      const pubDate = (block.match(/<pubDate[^>]*>([sS]*?)<\/pubDate>/) || [])[1]?.trim() || '';
+    const itemRe = /<item[^>]*>([sS]*?)</item>/gi;
+    let m;
+    while ((m = itemRe.exec(xml)) !== null) {
+      const block = m[1];
+      const title = extractTag(block, 'title');
+      const pubDate = extractTag(block, 'pubDate');
+      // link can be self-closing or wrapped — try both
+      const linkMatch = block.match(/<link[^>]*>([^<]+)</link>/) || block.match(/<link>([^<]+)</link>/);
+      const link = (linkMatch || [])[1]?.trim() || '#';
       if (title.length > 5) {
-        items.push({ title, url: link || '#', publishedAt: safeDate(pubDate), source: sourceName });
+        items.push({ title, url: link, publishedAt: safeDate(pubDate), source: sourceName });
       }
     }
     return items;
@@ -43,7 +51,7 @@ function parseRssXml(xml: string, sourceName: string): NewsItem[] {
 async function fetchRss(url: string, sourceName: string): Promise<NewsItem[]> {
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GasTrader/1.0)', 'Accept': 'application/rss+xml, application/xml, text/xml' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GasTrader/1.0)', 'Accept': 'application/rss+xml, application/xml, text/xml, */*' },
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return [];
@@ -59,7 +67,7 @@ export async function fetchEnergyNews(): Promise<NewsItem[]> {
     fetchRss('https://oilprice.com/rss/main', 'OilPrice.com'),
     fetchRss('https://energymonitor.ai/feed/', 'Energy Monitor'),
     fetchRss('https://www.naturalgasworld.com/feed', 'Natural Gas World'),
-    fetchRss('https://www.icis.com/explore/resources/news/rss/', 'ICIS'),
+    fetchRss('https://rss.dw.com/rdf/rss-en-bus', 'DW Business'),
   ]);
 
   const all: NewsItem[] = [];
@@ -67,7 +75,6 @@ export async function fetchEnergyNews(): Promise<NewsItem[]> {
     if (r.status === 'fulfilled') all.push(...r.value);
   }
 
-  // Deduplicate
   const seen = new Set<string>();
   const unique = all.filter(item => {
     const key = item.title.toLowerCase().slice(0, 55);
@@ -78,7 +85,7 @@ export async function fetchEnergyNews(): Promise<NewsItem[]> {
 
   const gasItems = unique.filter(item => isGas(item.title));
   const oilItems = unique.filter(item => isOilOnly(item.title));
-  const energyOther = unique.filter(item => {
+  const otherItems = unique.filter(item => {
     if (isGas(item.title) || isOilOnly(item.title)) return false;
     const l = item.title.toLowerCase();
     return ['energy', 'power', 'electricity', 'renewable', 'wind', 'solar', 'carbon'].some(k => l.includes(k));
@@ -87,7 +94,7 @@ export async function fetchEnergyNews(): Promise<NewsItem[]> {
   const list: NewsItem[] = [
     ...gasItems.slice(0, 12),
     ...(oilItems.length > 0 ? [oilItems[0]] : []),
-    ...energyOther.slice(0, 2),
+    ...otherItems.slice(0, 2),
   ];
 
   list.sort((a, b) => {
