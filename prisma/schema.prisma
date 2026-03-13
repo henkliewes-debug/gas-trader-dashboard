@@ -1,0 +1,42 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model GasPrice {
+  id            Int      @id @default(autoincrement())
+  symbol        String
+  price         Float
+  change        Float
+  changePercent Float
+  volume        BigInt?
+  high          Float?
+  low           Float?
+  timestamp     DateTime @default(now())
+  @@index([symbol, timestamp])
+}
+
+model NewsArticle {
+  id          Int      @id @default(autoincrement())
+  title       String
+  summary     String   @db.Text
+  url         String   @unique
+  source      String
+  publishedAt DateTime
+  createdAt   DateTime @default(now())
+  @@index([publishedAt])
+}
+
+model WeatherData {
+  id          Int      @id @default(autoincrement())
+  location    String
+  temperature Float
+  windSpeed   Float
+  description String
+  timestamp   DateTime @default(now())
+  @@index([location, timestamp])
+}
