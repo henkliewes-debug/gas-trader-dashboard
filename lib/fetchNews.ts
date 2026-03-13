@@ -1,4 +1,4 @@
-// fetchNews.ts — fields match NewsFeed component (url, source, publishedAt)
+// fetchNews.ts — direct RSS XML parsing, no third-party proxy
 interface NewsItem {
   title: string;
   url: string;
@@ -10,65 +10,60 @@ const GAS_KEYWORDS = [
   'natural gas', 'lng', 'ttf', 'nbp', 'gas price', 'gas supply', 'gas demand',
   'gas storage', 'gas market', 'gas trade', 'gas pipeline', 'gas import',
   'gas export', 'gas futures', 'gas flow', 'regasification', 'methane',
-  'gas grid', 'gas hub', 'gasification', 'gas terminal', 'spot gas',
+  'gas terminal', 'spot gas', 'gas hub', 'gas grid',
 ];
+const OIL_KEYWORDS = ['crude oil', 'brent crude', 'wti crude', 'opec cuts', 'oil price', 'oil barrel'];
 
-const OIL_KEYWORDS = ['oil price', 'crude oil', 'brent crude', 'wti crude', 'opec', 'petroleum', 'oil barrel'];
-
-function isGasRelated(title: string): boolean {
-  const lower = title.toLowerCase();
-  return GAS_KEYWORDS.some(k => lower.includes(k));
-}
-
-function isOilOnly(title: string): boolean {
-  const lower = title.toLowerCase();
-  return OIL_KEYWORDS.some(k => lower.includes(k)) && !isGasRelated(title);
-}
+function isGas(t: string) { const l = t.toLowerCase(); return GAS_KEYWORDS.some(k => l.includes(k)); }
+function isOilOnly(t: string) { const l = t.toLowerCase(); return OIL_KEYWORDS.some(k => l.includes(k)) && !isGas(t); }
 
 function safeDate(raw: string): string {
   if (!raw) return '';
-  try {
-    const d = new Date(raw);
-    if (isNaN(d.getTime())) return '';
-    return d.toISOString();
-  } catch {
-    return '';
-  }
+  try { const d = new Date(raw); return isNaN(d.getTime()) ? '' : d.toISOString(); } catch { return ''; }
 }
 
-async function fetchFeed(rssUrl: string, sourceName: string): Promise<NewsItem[]> {
+function parseRssXml(xml: string, sourceName: string): NewsItem[] {
   try {
-    const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}&count=25&api_key=`;
-    const res = await fetch(apiUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      next: { revalidate: 600 },
+    const items: NewsItem[] = [];
+    const itemRegex = /<item[^>]*>([sS]*?)<\/item>/gi;
+    let match;
+    while ((match = itemRegex.exec(xml)) !== null) {
+      const block = match[1];
+      const title = (block.match(/<title[^>]*>(?:<![CDATA[)?([sS]*?)(?:]]>)?<\/title>/) || [])[1]?.trim() || '';
+      const link = (block.match(/<link[^>]*>([^<]+)<\/link>/) || block.match(/<link[^>]*\/?>/) || [])[1]?.trim() || '#';
+      const pubDate = (block.match(/<pubDate[^>]*>([sS]*?)<\/pubDate>/) || [])[1]?.trim() || '';
+      if (title.length > 5) {
+        items.push({ title, url: link || '#', publishedAt: safeDate(pubDate), source: sourceName });
+      }
+    }
+    return items;
+  } catch { return []; }
+}
+
+async function fetchRss(url: string, sourceName: string): Promise<NewsItem[]> {
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GasTrader/1.0)', 'Accept': 'application/rss+xml, application/xml, text/xml' },
+      signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return [];
-    const data = await res.json();
-    if (data.status !== 'ok' || !Array.isArray(data.items)) return [];
-    return data.items.map((item: { title?: string; link?: string; pubDate?: string; isoDate?: string }) => ({
-      title: (item.title || '').trim(),
-      url: item.link || '#',
-      publishedAt: safeDate(item.pubDate || item.isoDate || ''),
-      source: sourceName,
-    })).filter((item: NewsItem) => item.title.length > 5);
-  } catch {
-    return [];
-  }
+    const xml = await res.text();
+    return parseRssXml(xml, sourceName);
+  } catch { return []; }
 }
 
 export async function fetchEnergyNews(): Promise<NewsItem[]> {
-  const results = await Promise.allSettled([
-    fetchFeed('https://feeds.reuters.com/reuters/businessNews', 'Reuters'),
-    fetchFeed('https://feeds.feedburner.com/platts/oilnews', 'Platts'),
-    fetchFeed('https://oilprice.com/rss/main', 'OilPrice.com'),
-    fetchFeed('https://www.lngprime.com/feed/', 'LNG Prime'),
-    fetchFeed('https://energymonitor.ai/feed/', 'Energy Monitor'),
-    fetchFeed('https://www.ft.com/rss/home/uk', 'FT'),
+  const feeds = await Promise.allSettled([
+    fetchRss('https://feeds.reuters.com/reuters/businessNews', 'Reuters'),
+    fetchRss('https://www.lngprime.com/feed/', 'LNG Prime'),
+    fetchRss('https://oilprice.com/rss/main', 'OilPrice.com'),
+    fetchRss('https://energymonitor.ai/feed/', 'Energy Monitor'),
+    fetchRss('https://www.naturalgasworld.com/feed', 'Natural Gas World'),
+    fetchRss('https://www.icis.com/explore/resources/news/rss/', 'ICIS'),
   ]);
 
   const all: NewsItem[] = [];
-  for (const r of results) {
+  for (const r of feeds) {
     if (r.status === 'fulfilled') all.push(...r.value);
   }
 
@@ -81,28 +76,26 @@ export async function fetchEnergyNews(): Promise<NewsItem[]> {
     return true;
   });
 
-  const gasItems = unique.filter(item => isGasRelated(item.title));
+  const gasItems = unique.filter(item => isGas(item.title));
   const oilItems = unique.filter(item => isOilOnly(item.title));
   const energyOther = unique.filter(item => {
-    const lower = item.title.toLowerCase();
-    return !isGasRelated(item.title) && !isOilOnly(item.title) &&
-      ['energy', 'power', 'electricity', 'renewable', 'wind', 'solar'].some(k => lower.includes(k));
+    if (isGas(item.title) || isOilOnly(item.title)) return false;
+    const l = item.title.toLowerCase();
+    return ['energy', 'power', 'electricity', 'renewable', 'wind', 'solar', 'carbon'].some(k => l.includes(k));
   });
 
   const list: NewsItem[] = [
     ...gasItems.slice(0, 12),
-    ...(oilItems.length > 0 ? [oilItems[0]] : []),  // max 1 oil item
+    ...(oilItems.length > 0 ? [oilItems[0]] : []),
     ...energyOther.slice(0, 2),
   ];
 
-  // Sort by date desc
   list.sort((a, b) => {
     if (!a.publishedAt) return 1;
     if (!b.publishedAt) return -1;
     return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
   });
 
-  // Fallback with correct field names
   if (list.length === 0) {
     const now = new Date().toISOString();
     return [
