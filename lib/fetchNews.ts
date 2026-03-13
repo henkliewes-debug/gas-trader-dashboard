@@ -1,4 +1,4 @@
-// fetchNews.ts — direct RSS XML parsing, no /s flag (Railway compat)
+// fetchNews.ts — no dotAll regex, Railway-compatible
 interface NewsItem {
   title: string;
   url: string;
@@ -6,62 +6,89 @@ interface NewsItem {
   source: string;
 }
 
-const GAS_KEYWORDS = [
-  'natural gas', 'lng', 'ttf', 'nbp', 'gas price', 'gas supply', 'gas demand',
-  'gas storage', 'gas market', 'gas trade', 'gas pipeline', 'gas import',
-  'gas export', 'gas futures', 'gas flow', 'regasification', 'methane',
-  'gas terminal', 'spot gas', 'gas hub', 'gas grid',
-];
-const OIL_KEYWORDS = ['crude oil', 'brent crude', 'wti crude', 'opec cuts', 'oil price', 'oil barrel'];
+const GAS_KW = ['natural gas','lng','ttf','nbp','gas price','gas supply','gas demand','gas storage','gas market','gas trade','gas pipeline','gas import','gas export','gas futures','gas flow','regasification','methane','gas terminal','gas hub','gas grid'];
+const OIL_KW = ['crude oil','brent crude','wti crude','opec cuts','oil barrel'];
 
-function isGas(t: string) { const l = t.toLowerCase(); return GAS_KEYWORDS.some(k => l.includes(k)); }
-function isOilOnly(t: string) { const l = t.toLowerCase(); return OIL_KEYWORDS.some(k => l.includes(k)) && !isGas(t); }
+function isGas(t: string) { const l = t.toLowerCase(); return GAS_KW.some(k => l.includes(k)); }
+function isOil(t: string) { const l = t.toLowerCase(); return OIL_KW.some(k => l.includes(k)) && !isGas(t); }
 
 function safeDate(raw: string): string {
   if (!raw) return '';
   try { const d = new Date(raw); return isNaN(d.getTime()) ? '' : d.toISOString(); } catch { return ''; }
 }
 
-function extractTag(block: string, tag: string): string {
-  // No /s flag — use [sS] instead of . with /s
-  const re = new RegExp('<' + tag + '[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/' + tag + '>', 'i');
-  return (block.match(re) || [])[1]?.trim() || '';
+function getTagValue(block: string, tag: string): string {
+  const open = '<' + tag;
+  const close = '</' + tag + '>';
+  const start = block.indexOf(open);
+  if (start === -1) return '';
+  const contentStart = block.indexOf('>', start);
+  if (contentStart === -1) return '';
+  const end = block.indexOf(close, contentStart);
+  if (end === -1) return '';
+  let val = block.slice(contentStart + 1, end).trim();
+  // Strip CDATA wrapper
+  if (val.startsWith('<![CDATA[') && val.endsWith(']]>')) {
+    val = val.slice(9, val.length - 3).trim();
+  }
+  return val;
 }
 
-function parseRssXml(xml: string, sourceName: string): NewsItem[] {
-  try {
-    const items: NewsItem[] = [];
-    const itemRe = /<item[^>]*>([sS]*?)</item>/gi;
-    let m;
-    while ((m = itemRe.exec(xml)) !== null) {
-      const block = m[1];
-      const title = extractTag(block, 'title');
-      const pubDate = extractTag(block, 'pubDate');
-      // link can be self-closing or wrapped — try both
-      const linkMatch = block.match(/<link[^>]*>([^<]+)</link>/) || block.match(/<link>([^<]+)</link>/);
-      const link = (linkMatch || [])[1]?.trim() || '#';
-      if (title.length > 5) {
-        items.push({ title, url: link, publishedAt: safeDate(pubDate), source: sourceName });
-      }
+function getLinkValue(block: string): string {
+  // <link>url</link> or <link href="url"/>
+  const simple = block.indexOf('<link>');
+  if (simple !== -1) {
+    const end = block.indexOf('</link>', simple);
+    if (end !== -1) return block.slice(simple + 6, end).trim();
+  }
+  // Try href attribute
+  const href = block.indexOf('<link href=');
+  if (href !== -1) {
+    const q1 = block.indexOf('"', href + 10);
+    if (q1 !== -1) {
+      const q2 = block.indexOf('"', q1 + 1);
+      if (q2 !== -1) return block.slice(q1 + 1, q2).trim();
     }
-    return items;
-  } catch { return []; }
+  }
+  return '#';
 }
 
-async function fetchRss(url: string, sourceName: string): Promise<NewsItem[]> {
+function parseXml(xml: string, source: string): NewsItem[] {
+  const items: NewsItem[] = [];
+  const marker = '<item';
+  const endMarker = '</item>';
+  let pos = 0;
+  while (true) {
+    const start = xml.indexOf(marker, pos);
+    if (start === -1) break;
+    const end = xml.indexOf(endMarker, start);
+    if (end === -1) break;
+    const block = xml.slice(start, end + endMarker.length);
+    const title = getTagValue(block, 'title');
+    const pubDate = getTagValue(block, 'pubDate');
+    const link = getLinkValue(block);
+    if (title.length > 5) {
+      items.push({ title, url: link, publishedAt: safeDate(pubDate), source });
+    }
+    pos = end + endMarker.length;
+  }
+  return items;
+}
+
+async function fetchRss(url: string, source: string): Promise<NewsItem[]> {
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GasTrader/1.0)', 'Accept': 'application/rss+xml, application/xml, text/xml, */*' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; GasTrader/1.0)', Accept: 'application/rss+xml, application/xml, text/xml, */*' },
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return [];
     const xml = await res.text();
-    return parseRssXml(xml, sourceName);
+    return parseXml(xml, source);
   } catch { return []; }
 }
 
 export async function fetchEnergyNews(): Promise<NewsItem[]> {
-  const feeds = await Promise.allSettled([
+  const settled = await Promise.allSettled([
     fetchRss('https://feeds.reuters.com/reuters/businessNews', 'Reuters'),
     fetchRss('https://www.lngprime.com/feed/', 'LNG Prime'),
     fetchRss('https://oilprice.com/rss/main', 'OilPrice.com'),
@@ -71,7 +98,7 @@ export async function fetchEnergyNews(): Promise<NewsItem[]> {
   ]);
 
   const all: NewsItem[] = [];
-  for (const r of feeds) {
+  for (const r of settled) {
     if (r.status === 'fulfilled') all.push(...r.value);
   }
 
@@ -83,19 +110,15 @@ export async function fetchEnergyNews(): Promise<NewsItem[]> {
     return true;
   });
 
-  const gasItems = unique.filter(item => isGas(item.title));
-  const oilItems = unique.filter(item => isOilOnly(item.title));
-  const otherItems = unique.filter(item => {
-    if (isGas(item.title) || isOilOnly(item.title)) return false;
-    const l = item.title.toLowerCase();
-    return ['energy', 'power', 'electricity', 'renewable', 'wind', 'solar', 'carbon'].some(k => l.includes(k));
+  const gasItems = unique.filter(i => isGas(i.title));
+  const oilItems = unique.filter(i => isOil(i.title));
+  const otherItems = unique.filter(i => {
+    if (isGas(i.title) || isOil(i.title)) return false;
+    const l = i.title.toLowerCase();
+    return ['energy','power','electricity','renewable','wind','solar','carbon'].some(k => l.includes(k));
   });
 
-  const list: NewsItem[] = [
-    ...gasItems.slice(0, 12),
-    ...(oilItems.length > 0 ? [oilItems[0]] : []),
-    ...otherItems.slice(0, 2),
-  ];
+  const list = [...gasItems.slice(0, 12), ...(oilItems.length ? [oilItems[0]] : []), ...otherItems.slice(0, 2)];
 
   list.sort((a, b) => {
     if (!a.publishedAt) return 1;
