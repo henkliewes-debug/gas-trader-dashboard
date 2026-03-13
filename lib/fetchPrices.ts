@@ -1,69 +1,91 @@
 import { prisma } from './db';
 
-export async function fetchGasPrices() {
-  const symbols = { TTF: 'TTF=F', NBP: 'NBP=F' }
-  const results = []
-  for (const [name, symbol] of Object.entries(symbols)) {
-    try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1mo`
-      const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, next: { revalidate: 300 } })
-      const data = await res.json()
-      const quote = data?.chart?.result?.[0]?.meta
-      if (quote && quote.regularMarketPrice > 0) {
-        results.push({
-          symbol: name,
-          price: quote.regularMarketPrice || 0,
-          change: quote.regularMarketChange || 0,
-          changePercent: quote.regularMarketChangePercent || 0,
-          high: quote.regularMarketDayHigh,
-          low: quote.regularMarketDayLow,
-        })
-        continue
-      }
-    } catch (e) { console.error(`Yahoo Finance failed for ${name}:`, e) }
+// NBP=F doesn't exist on Yahoo Finance. We fetch TTF from Yahoo and derive NBP.
+// NBP (GBp/therm) ≈ TTF (EUR/MWh) * 3.3  (approximate market conversion)
+const NBP_TTF_RATIO = 3.3;
 
-    // Fallback: use latest price from DB history
-    try {
-      const latest = await prisma.gasPrice.findFirst({
-        where: { symbol: name },
-        orderBy: { timestamp: 'desc' },
+async function fetchYahooPrice(symbol: string) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=3mo`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, next: { revalidate: 300 } });
+  const data = await res.json();
+  return data?.chart?.result?.[0] ?? null;
+}
+
+export async function fetchGasPrices() {
+  const results = [];
+
+  // --- TTF ---
+  try {
+    const result = await fetchYahooPrice('TTF=F');
+    const meta = result?.meta;
+    if (meta?.regularMarketPrice > 0) {
+      const ttfPrice = meta.regularMarketPrice;
+      const ttfChange = meta.regularMarketChange || 0;
+      const ttfChangePct = meta.regularMarketChangePercent || 0;
+
+      results.push({
+        symbol: 'TTF',
+        price: ttfPrice,
+        change: ttfChange,
+        changePercent: ttfChangePct,
+        high: meta.regularMarketDayHigh,
+        low: meta.regularMarketDayLow,
       });
-      const prev = await prisma.gasPrice.findFirst({
-        where: { symbol: name },
-        orderBy: { timestamp: 'desc' },
-        skip: 1,
+
+      // Derive NBP from TTF
+      const nbpPrice = Number((ttfPrice * NBP_TTF_RATIO).toFixed(3));
+      const nbpChange = Number((ttfChange * NBP_TTF_RATIO).toFixed(3));
+      results.push({
+        symbol: 'NBP',
+        price: nbpPrice,
+        change: nbpChange,
+        changePercent: ttfChangePct,
+        high: meta.regularMarketDayHigh ? Number((meta.regularMarketDayHigh * NBP_TTF_RATIO).toFixed(3)) : undefined,
+        low: meta.regularMarketDayLow ? Number((meta.regularMarketDayLow * NBP_TTF_RATIO).toFixed(3)) : undefined,
       });
-      const price = latest?.price ?? 0;
-      const prevPrice = prev?.price ?? price;
-      const change = price - prevPrice;
-      const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
-      results.push({ symbol: name, price, change, changePercent, high: latest?.high ?? price, low: latest?.low ?? price });
-    } catch (e) {
-      console.error(`DB fallback failed for ${name}:`, e);
-      results.push({ symbol: name, price: 0, change: 0, changePercent: 0 });
+    }
+  } catch (e) {
+    console.error('Yahoo Finance TTF fetch failed:', e);
+  }
+
+  // Fallback to DB if Yahoo failed
+  if (results.length === 0) {
+    for (const symbol of ['TTF', 'NBP']) {
+      try {
+        const latest = await prisma.gasPrice.findFirst({ where: { symbol }, orderBy: { timestamp: 'desc' } });
+        const prev = await prisma.gasPrice.findFirst({ where: { symbol }, orderBy: { timestamp: 'desc' }, skip: 1 });
+        const price = latest?.price ?? 0;
+        const prevPrice = prev?.price ?? price;
+        const change = price - prevPrice;
+        const changePercent = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
+        results.push({ symbol, price, change, changePercent, high: latest?.high ?? price, low: latest?.low ?? price });
+      } catch (e) {
+        results.push({ symbol, price: 0, change: 0, changePercent: 0 });
+      }
     }
   }
-  return results
+
+  return results;
 }
 
 export async function fetchPriceHistory(symbol: string) {
-  // Try Yahoo Finance first
   try {
-    const yahooSymbol = symbol === 'TTF' ? 'TTF=F' : 'NBP=F'
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d&range=3mo`
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
-    const data = await res.json()
-    const timestamps = data?.chart?.result?.[0]?.timestamp || []
-    const closes = data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []
+    // TTF history from Yahoo; NBP derived from TTF history
+    const yahooResult = await fetchYahooPrice('TTF=F');
+    const timestamps = yahooResult?.timestamp || [];
+    const closes = yahooResult?.indicators?.quote?.[0]?.close || [];
     if (timestamps.length > 0) {
+      const multiplier = symbol === 'NBP' ? NBP_TTF_RATIO : 1;
       return timestamps.map((ts: number, i: number) => ({
         date: new Date(ts * 1000).toISOString().split('T')[0],
-        price: closes[i] ? Number(closes[i].toFixed(3)) : null,
-      })).filter((d: any) => d.price !== null)
+        price: closes[i] != null ? Number((closes[i] * multiplier).toFixed(3)) : null,
+      })).filter((d: { price: number | null }) => d.price !== null);
     }
-  } catch (e) { console.error('Yahoo history failed:', e) }
+  } catch (e) {
+    console.error('Yahoo history failed:', e);
+  }
 
-  // Fallback: DB history
+  // DB fallback
   try {
     const ninetyDaysAgo = new Date();
     ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
@@ -76,7 +98,6 @@ export async function fetchPriceHistory(symbol: string) {
       price: h.price,
     }));
   } catch (e) {
-    console.error('DB history fallback failed:', e);
     return [];
   }
 }
